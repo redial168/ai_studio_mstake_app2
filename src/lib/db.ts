@@ -37,7 +37,7 @@ let dbPromise: Promise<IDBPDatabase<QuestionDB>>;
 
 export function getDB() {
   if (!dbPromise) {
-    dbPromise = openDB<QuestionDB>('question-bank', 2, {
+    dbPromise = openDB<QuestionDB>('question-bank', 3, {
       upgrade(db, oldVersion, _newVersion, tx) {
         if (oldVersion < 1) {
           const store = db.createObjectStore('questions', {
@@ -58,6 +58,10 @@ export function getDB() {
           if (!questionStore.indexNames.contains('by-student')) {
             questionStore.createIndex('by-student', 'studentId');
           }
+        }
+        if (oldVersion < 3) {
+          // Placeholder for version 3 migrations if any
+          // For now, just bumping the version to resolve the error
         }
       },
     });

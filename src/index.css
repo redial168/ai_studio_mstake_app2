@@ -20,4 +20,25 @@
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
     background: #555;
   }
+
+  /* Basic Markdown Styling */
+  .prose-sm {
+    font-size: 0.875rem;
+    line-height: 1.6;
+  }
+  .prose-sm p {
+    margin-bottom: 0.75rem;
+  }
+  .prose-sm strong {
+    font-weight: 700;
+    color: #1c1917;
+  }
+  .prose-sm ul {
+    list-style-type: disc;
+    padding-left: 1.25rem;
+    margin-bottom: 0.75rem;
+  }
+  .prose-sm li {
+    margin-bottom: 0.25rem;
+  }
 }

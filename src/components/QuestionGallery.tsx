@@ -8,13 +8,17 @@ export function QuestionGallery({ studentId }: { studentId: string }) {
   const [loading, setLoading] = useState(true);
   const [isZoomed, setIsZoomed] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<'date-desc' | 'date-asc' | 'subject'>('date-desc');
-  const [confirmAction, setConfirmAction] = useState<{ type: 'single' | 'all', id?: string } | null>(null);
 
   const loadQuestions = async () => {
     setLoading(true);
     try {
       const data = await getAllQuestions(studentId);
       setQuestions(data);
+    } catch (error) {
+      console.error('Failed to load questions:', error);
+      if (error instanceof Error && error.name === 'VersionError') {
+        alert('資料庫版本不符，請重新整理頁面。');
+      }
     } finally {
       setLoading(false);
     }
@@ -24,33 +28,20 @@ export function QuestionGallery({ studentId }: { studentId: string }) {
     loadQuestions();
   }, [studentId]);
 
-  const handleDeleteClick = (id: string) => {
-    setConfirmAction({ type: 'single', id });
+  const handleDelete = async (id: string) => {
+    if (confirm('確定要刪除這道題目嗎？')) {
+      await deleteQuestion(id);
+      loadQuestions();
+    }
   };
 
-  const handleDeleteAllClick = () => {
-    setConfirmAction({ type: 'all' });
-  };
-
-  const executeDelete = async () => {
-    if (!confirmAction) return;
-    
-    try {
-      if (confirmAction.type === 'single' && confirmAction.id) {
-        await deleteQuestion(confirmAction.id);
-        await loadQuestions();
-      } else if (confirmAction.type === 'all') {
-        setLoading(true);
-        for (const q of questions) {
-          await deleteQuestion(q.id);
-        }
-        await loadQuestions();
+  const handleDeleteAll = async () => {
+    if (confirm('確定要刪除該學生的「所有」錯題嗎？此操作無法復原。')) {
+      setLoading(true);
+      for (const q of questions) {
+        await deleteQuestion(q.id);
       }
-    } catch (error) {
-      console.error('Failed to delete question:', error);
-      alert('刪除失敗，請稍後再試');
-    } finally {
-      setConfirmAction(null);
+      await loadQuestions();
     }
   };
 
@@ -114,7 +105,7 @@ export function QuestionGallery({ studentId }: { studentId: string }) {
           </select>
         </div>
         <button
-          onClick={handleDeleteAllClick}
+          onClick={handleDeleteAll}
           className="flex items-center gap-2 text-sm text-red-600 bg-red-50 hover:bg-red-100 px-4 py-2.5 rounded-xl transition-colors font-medium"
         >
           <Trash2 className="w-4 h-4" />
@@ -158,7 +149,7 @@ export function QuestionGallery({ studentId }: { studentId: string }) {
                     <Download className="w-4 h-4" />
                   </button>
                   <button
-                    onClick={() => handleDeleteClick(q.id)}
+                    onClick={() => handleDelete(q.id)}
                     className="p-2 bg-white shadow-lg rounded-full text-red-500 hover:bg-red-50 transition-colors"
                     title="刪除"
                   >
@@ -246,51 +237,6 @@ export function QuestionGallery({ studentId }: { studentId: string }) {
                 className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl"
                 referrerPolicy="no-referrer"
               />
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Delete Confirmation Modal */}
-      <AnimatePresence>
-        {confirmAction && (
-          <motion.div
-            key="delete-modal"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[110] bg-stone-900/60 backdrop-blur-sm flex items-center justify-center p-4"
-            onClick={() => setConfirmAction(null)}
-          >
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl p-6 max-w-sm w-full shadow-2xl"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <h3 className="text-lg font-bold text-stone-900 mb-2">
-                {confirmAction.type === 'all' ? '刪除所有錯題' : '刪除錯題'}
-              </h3>
-              <p className="text-stone-500 text-sm mb-6">
-                {confirmAction.type === 'all' 
-                  ? '確定要刪除該學生的「所有」錯題嗎？此操作無法復原。' 
-                  : '確定要刪除這道題目嗎？此操作無法復原。'}
-              </p>
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setConfirmAction(null)}
-                  className="flex-1 px-4 py-2.5 bg-stone-100 text-stone-600 rounded-xl font-medium hover:bg-stone-200 transition-colors"
-                >
-                  取消
-                </button>
-                <button
-                  onClick={executeDelete}
-                  className="flex-1 px-4 py-2.5 bg-red-500 text-white rounded-xl font-medium hover:bg-red-600 transition-colors"
-                >
-                  確定刪除
-                </button>
-              </div>
             </motion.div>
           </motion.div>
         )}

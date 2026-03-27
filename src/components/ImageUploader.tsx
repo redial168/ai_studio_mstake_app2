@@ -1,8 +1,17 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Loader2, Check, Save, Eraser, MousePointer2, Square, Info, Sparkles, Maximize2, X, Terminal } from 'lucide-react';
-import { removeHandwritingWithAI } from '../lib/gemini';
+import { Upload, Loader2, Check, Save, Eraser, MousePointer2, Square, Info, Sparkles, Maximize2, X, Terminal, ScanSearch } from 'lucide-react';
+import { removeHandwritingWithAI, detectQuestionsWithAI } from '../lib/gemini';
 import { saveQuestion } from '../lib/db';
 import { motion, AnimatePresence } from 'motion/react';
+
+declare global {
+  interface Window {
+    aistudio?: {
+      hasSelectedApiKey?: () => Promise<boolean>;
+      openSelectKey?: () => Promise<void>;
+    };
+  }
+}
 
 export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string, onSaveSuccess: () => void }) {
   const [file, setFile] = useState<File | null>(null);
@@ -11,6 +20,7 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isZoomed, setIsZoomed] = useState<string | null>(null);
+  const [isAutoDetecting, setIsAutoDetecting] = useState(false);
   
   // Structured input state
   const [subject, setSubject] = useState('國文');
@@ -31,11 +41,7 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
   const [currentRect, setCurrentRect] = useState<{ x: number, y: number, w: number, h: number } | null>(null);
   const [logs, setLogs] = useState<{ time: string, msg: string, type: 'info' | 'error' | 'success' }[]>([]);
   const [processingIndex, setProcessingIndex] = useState<number | null>(null);
-  
-  // Advanced erasure parameters
-  const [bboxPadding, setBboxPadding] = useState(8);
-  const [darknessOffset, setDarknessOffset] = useState(40);
-  const [saturationThreshold, setSaturationThreshold] = useState(20);
+  const [aiModel, setAiModel] = useState('gemini-2.5-flash-image');
   
   const [isImageLoading, setIsImageLoading] = useState(false);
   
@@ -47,6 +53,19 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
   const addLog = (msg: string, type: 'info' | 'error' | 'success' = 'info') => {
     const time = new Date().toLocaleTimeString();
     setLogs(prev => [...prev, { time, msg, type }]);
+  };
+
+  const handleModelChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const newModel = e.target.value;
+    if (newModel !== 'gemini-2.5-flash-image') {
+      if (window.aistudio && window.aistudio.hasSelectedApiKey) {
+        const hasKey = await window.aistudio.hasSelectedApiKey();
+        if (!hasKey && window.aistudio.openSelectKey) {
+          await window.aistudio.openSelectKey();
+        }
+      }
+    }
+    setAiModel(newModel);
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -116,140 +135,38 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
   };
 
   const cropFromCanvas = (sourceCanvas: HTMLCanvasElement, rect: { x: number, y: number, w: number, h: number }): string => {
-    const canvas = document.createElement('canvas');
+    // Use a small margin to ensure we don't cut off the edges of the selection
+    const margin = 15;
     
-    // Use a slightly larger margin (10%) to account for minor AI shifts
-    const marginW = Math.floor(rect.w * 0.1);
-    const marginH = Math.floor(rect.h * 0.1);
-    
-    const x1 = Math.max(0, Math.floor(rect.x - marginW));
-    const y1 = Math.max(0, Math.floor(rect.y - marginH));
-    const x2 = Math.min(sourceCanvas.width, Math.ceil(rect.x + rect.w + marginW));
-    const y2 = Math.min(sourceCanvas.height, Math.ceil(rect.y + rect.h + marginH));
+    const x1 = Math.max(0, Math.floor(rect.x - margin));
+    const y1 = Math.max(0, Math.floor(rect.y - margin));
+    const x2 = Math.min(sourceCanvas.width, Math.ceil(rect.x + rect.w + margin));
+    const y2 = Math.min(sourceCanvas.height, Math.ceil(rect.y + rect.h + margin));
     
     const w = x2 - x1;
     const h = y2 - y1;
     
-    canvas.width = w;
-    canvas.height = h;
+    // CRITICAL: Pad to square to prevent AI from squashing the aspect ratio
+    // Gemini 2.5 Flash Image defaults to 1:1, so sending a square prevents distortion
+    const size = Math.max(w, h);
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
     const ctx = canvas.getContext('2d');
     
     if (ctx) {
-      // Use better image smoothing for the crop
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
       ctx.fillStyle = '#FFFFFF';
-      ctx.fillRect(0, 0, w, h);
-      ctx.drawImage(sourceCanvas, x1, y1, w, h, 0, 0, w, h);
+      ctx.fillRect(0, 0, size, size);
+      // Center the content
+      const dx = (size - w) / 2;
+      const dy = (size - h) / 2;
+      ctx.drawImage(sourceCanvas, x1, y1, w, h, dx, dy, w, h);
     }
     
     return canvas.toDataURL('image/jpeg', 0.95);
   };
 
-  const eraseBboxesFromImage = (base64Str: string, bboxes: number[][], padding: number, darknessOffset: number, saturationThreshold: number): Promise<string> => {
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.src = base64Str;
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return resolve(base64Str);
-        
-        ctx.drawImage(img, 0, 0);
-        
-        // 1. Calculate global background color and dynamic printed text threshold
-        const fullImgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const fullData = fullImgData.data;
-        let bgR = 255, bgG = 255, bgB = 255;
-        let lightPixelCount = 0;
-        let sumR = 0, sumG = 0, sumB = 0;
-        let minGray = 255;
-        
-        for (let i = 0; i < fullData.length; i += 4) {
-          const r = fullData[i];
-          const g = fullData[i + 1];
-          const b = fullData[i + 2];
-          const gray = (r + g + b) / 3;
-          
-          if (gray < minGray) minGray = gray;
-          
-          // Paper is usually the lightest part of the image
-          if (gray > 160) { 
-            sumR += r; sumG += g; sumB += b;
-            lightPixelCount++;
-          }
-        }
-        
-        if (lightPixelCount > 0) {
-          bgR = sumR / lightPixelCount;
-          bgG = sumG / lightPixelCount;
-          bgB = sumB / lightPixelCount;
-        }
-        
-        // Printed text threshold is slightly above the darkest pixel in the image
-        // This ensures we preserve printed text even in poorly lit photos, 
-        // while still erasing pencil (lighter gray) and black pen (often slightly lighter than printed text)
-        const printedTextThreshold = Math.min(150, minGray + darknessOffset);
-        
-        // 2. Process each bounding box
-        for (const bbox of bboxes) {
-          if (bbox.length !== 4) continue;
-          const [ymin, xmin, ymax, xmax] = bbox;
-          
-          // Convert normalized coordinates (0-1000) to pixel coordinates
-          const x = (xmin / 1000) * canvas.width;
-          const y = (ymin / 1000) * canvas.height;
-          const w = ((xmax - xmin) / 1000) * canvas.width;
-          const h = ((ymax - ymin) / 1000) * canvas.height;
-          
-          const startX = Math.max(0, Math.floor(x - padding));
-          const startY = Math.max(0, Math.floor(y - padding));
-          const endX = Math.min(canvas.width, Math.ceil(x + w + padding));
-          const endY = Math.min(canvas.height, Math.ceil(y + h + padding));
-          const boxW = endX - startX;
-          const boxH = endY - startY;
-          
-          if (boxW <= 0 || boxH <= 0) continue;
-
-          // Get image data for the bounding box
-          const imgData = ctx.getImageData(startX, startY, boxW, boxH);
-          const data = imgData.data;
-          
-          // Erase handwriting and preserve printed text
-          for (let i = 0; i < data.length; i += 4) {
-            const r = data[i];
-            const g = data[i + 1];
-            const b = data[i + 2];
-            
-            const gray = (r + g + b) / 3;
-            const max = Math.max(r, g, b);
-            const min = Math.min(r, g, b);
-            const saturation = max - min;
-            
-            // STRICTER printed text check:
-            // Must be VERY dark (gray < printedTextThreshold) and VERY neutral (saturation < saturationThreshold)
-            // This ensures pencil (gray > 100) and black pen (often slightly blue/brown or lighter) are erased.
-            const isPrintedText = gray < printedTextThreshold && saturation < saturationThreshold;
-            
-            if (!isPrintedText) {
-              // Replace non-printed-text pixels with the global background color
-              data[i] = bgR;     // R
-              data[i + 1] = bgG; // G
-              data[i + 2] = bgB; // B
-            }
-          }
-          
-          ctx.putImageData(imgData, startX, startY);
-        }
-        
-        resolve(canvas.toDataURL('image/jpeg', 0.95));
-      };
-    });
-  };
-
-  const autoCropWhiteBackground = (base64Str: string, padding: number = 20): Promise<string> => {
+  const autoCropWhiteBackground = (base64Str: string, paddingX: number = 20, paddingY: number = 10): Promise<string> => {
     return new Promise((resolve) => {
       const img = new Image();
       img.src = base64Str;
@@ -265,11 +182,11 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
         const data = imageData.data;
         
         let minX = canvas.width;
-        let minY = canvas.height;
         let maxX = 0;
+        let minY = canvas.height;
         let maxY = 0;
         
-        // Find non-white pixels (threshold 240 to account for compression artifacts)
+        // Find non-white pixels
         for (let y = 0; y < canvas.height; y++) {
           for (let x = 0; x < canvas.width; x++) {
             const i = (y * canvas.width + x) * 4;
@@ -277,7 +194,8 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
             const g = data[i+1];
             const b = data[i+2];
             
-            if (r < 240 || g < 240 || b < 240) {
+            // Threshold 250 to be sensitive but ignore slight noise
+            if (r < 250 || g < 250 || b < 250) {
               if (x < minX) minX = x;
               if (x > maxX) maxX = x;
               if (y < minY) minY = y;
@@ -286,34 +204,72 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
           }
         }
         
-        // If the image is completely white or empty, return original
-        if (minX > maxX || minY > maxY) {
+        if (minY > maxY || minX > maxX) {
           return resolve(base64Str);
         }
         
-        // Add padding
-        minX = Math.max(0, minX - padding);
-        minY = Math.max(0, minY - padding);
-        maxX = Math.min(canvas.width, maxX + padding);
-        maxY = Math.min(canvas.height, maxY + padding);
+        // Add padding and constrain to canvas boundaries
+        const cropX = Math.max(0, minX - paddingX);
+        const cropY = Math.max(0, minY - paddingY);
+        const cropX2 = Math.min(canvas.width, maxX + paddingX);
+        const cropY2 = Math.min(canvas.height, maxY + paddingY);
         
-        const width = maxX - minX;
-        const height = maxY - minY;
+        const width = cropX2 - cropX;
+        const height = cropY2 - cropY;
         
         const cropCanvas = document.createElement('canvas');
         cropCanvas.width = width;
         cropCanvas.height = height;
         const cropCtx = cropCanvas.getContext('2d');
+        
         if (cropCtx) {
           cropCtx.fillStyle = '#FFFFFF';
           cropCtx.fillRect(0, 0, width, height);
-          cropCtx.drawImage(canvas, minX, minY, width, height, 0, 0, width, height);
+          cropCtx.drawImage(canvas, cropX, cropY, width, height, 0, 0, width, height);
           resolve(cropCanvas.toDataURL('image/jpeg', 0.95));
         } else {
           resolve(base64Str);
         }
       };
     });
+  };
+
+  const handleAutoDetectQuestions = async () => {
+    if (!originalUrl || !canvasRef.current) return;
+    setIsAutoDetecting(true);
+    setLogs([]);
+    addLog(`🤖 正在呼叫 AI 自動偵測題目區塊...`);
+    
+    try {
+      // Use the original image (which is already resized to max 2000x2000)
+      const bboxes = await detectQuestionsWithAI(originalUrl, 'image/jpeg');
+      
+      if (bboxes.length === 0) {
+        addLog(`⚠️ AI 未能偵測到任何題目區塊。`, 'error');
+        setIsAutoDetecting(false);
+        return;
+      }
+
+      const imgWidth = canvasRef.current.width;
+      const imgHeight = canvasRef.current.height;
+      
+      const newSelections = bboxes.map(bbox => {
+        const [ymin, xmin, ymax, xmax] = bbox;
+        const x = (xmin / 1000) * imgWidth;
+        const y = (ymin / 1000) * imgHeight;
+        const w = ((xmax - xmin) / 1000) * imgWidth;
+        const h = ((ymax - ymin) / 1000) * imgHeight;
+        return { id: crypto.randomUUID(), x, y, w, h };
+      });
+
+      setSelections(newSelections);
+      addLog(`✅ 成功自動框選 ${newSelections.length} 個題目！您可以手動微調或刪除不需要的區塊。`, 'success');
+    } catch (error) {
+      console.error('Auto detect failed:', error);
+      addLog(`❌ 自動偵測失敗: ${error instanceof Error ? error.message : String(error)}`, 'error');
+    } finally {
+      setIsAutoDetecting(false);
+    }
   };
 
   const handleBatchProcess = async () => {
@@ -333,24 +289,20 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
         // 1. Crop directly from canvas
         const croppedBase64 = cropFromCanvas(sourceCanvas, rect);
         
-        // 2. AI Process (Detect Handwriting Bounding Boxes)
-        addLog(`🤖 正在呼叫 AI 偵測第 ${i + 1} 個區塊的筆跡...`);
-        const bboxes = await removeHandwritingWithAI(croppedBase64, 'image/jpeg');
+        // 2. AI Process (Recreate clean image)
+        addLog(`🤖 正在呼叫 AI 重新生成第 ${i + 1} 個區塊的乾淨圖片...`);
+        const cleanedBase64 = await removeHandwritingWithAI(croppedBase64, 'image/jpeg', aiModel);
         
-        // 3. Draw white rectangles over handwriting
-        addLog(`🖌️ 正在清除第 ${i + 1} 個區塊的筆跡...`);
-        const cleanedBase64 = await eraseBboxesFromImage(croppedBase64, bboxes, bboxPadding, darknessOffset, saturationThreshold);
-        
-        // 4. Auto-crop the white background to perfectly frame the text
+        // 3. Auto-crop the white background (both dimensions)
         addLog(`✂️ 正在精確裁切第 ${i + 1} 個區塊的邊界...`);
-        const processedCrop = await autoCropWhiteBackground(cleanedBase64, 20);
+        const processedUrl = await autoCropWhiteBackground(cleanedBase64, 30, 10);
         
         // 3. Save
         addLog(`💾 正在儲存第 ${i + 1} 個題目...`);
         await saveQuestion({
           studentId,
           originalUrl: croppedBase64,
-          processedUrl: processedCrop,
+          processedUrl: processedUrl,
           subject: subject === '其他' ? customSubject : subject,
           grade,
           date,
@@ -497,13 +449,27 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
                 {isProcessing ? '正在批次處理中...' : '請在考卷上框選題目區塊 (可多選)'}
               </p>
               <div className="flex items-center gap-2">
-                <span className="text-[10px] bg-stone-900 text-white px-2 py-0.5 rounded-full font-bold">
+                {!isProcessing && (
+                  <button
+                    onClick={handleAutoDetectQuestions}
+                    disabled={isAutoDetecting}
+                    className="flex items-center gap-1 text-[10px] bg-amber-100 text-amber-700 hover:bg-amber-200 px-2.5 py-1 rounded-full font-bold transition-colors disabled:opacity-50"
+                  >
+                    {isAutoDetecting ? <Loader2 className="w-3 h-3 animate-spin" /> : <ScanSearch className="w-3 h-3" />}
+                    AI 自動分題
+                  </button>
+                )}
+                <span className="text-[10px] bg-stone-900 text-white px-2 py-1 rounded-full font-bold">
                   已選取 {selections.length} 個區塊
                 </span>
                 {selections.length > 0 && !isProcessing && (
                   <button 
-                    onClick={() => setSelections([])}
-                    className="text-[10px] text-red-500 hover:underline"
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelections([]);
+                    }}
+                    className="text-[10px] text-red-500 hover:text-red-700 hover:underline px-1 font-medium"
                   >
                     全部清除
                   </button>
@@ -535,7 +501,7 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
                 {selections.map((s, i) => (
                   <div 
                     key={s.id}
-                    className={`absolute border-2 transition-all flex items-start justify-end p-1 ${
+                    className={`absolute border-2 transition-all flex items-start justify-end p-1 pointer-events-none ${
                       processingIndex === i 
                         ? 'border-amber-500 bg-amber-500/20 animate-pulse' 
                         : i < (processingIndex ?? -1)
@@ -551,8 +517,13 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
                   >
                     {!isProcessing && (
                       <button 
-                        onClick={() => removeSelection(s.id)}
-                        className="bg-stone-900 text-white p-1 rounded-md hover:bg-red-500 transition-colors shadow-lg"
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          removeSelection(s.id);
+                        }}
+                        className="bg-stone-900 text-white p-1 rounded-md hover:bg-red-500 transition-colors shadow-lg pointer-events-auto"
                       >
                         <X className="w-3 h-3" />
                       </button>
@@ -636,64 +607,27 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
             )}
           </AnimatePresence>
 
-          {/* Advanced Erasure Parameters */}
-          <div className="bg-white p-6 rounded-3xl border border-stone-200 shadow-sm space-y-6">
-            <div className="flex items-center gap-2 border-b border-stone-100 pb-4">
-              <Sparkles className="w-5 h-5 text-stone-400" />
-              <h3 className="font-semibold text-stone-800">進階去痕參數設定</h3>
-              <span className="text-xs text-stone-400 ml-auto">如果去痕效果不佳，可以嘗試調整以下參數</span>
-            </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="space-y-2">
-                <div className="flex justify-between items-center">
-                  <label className="text-xs font-semibold text-stone-600">消除範圍擴張 (Padding)</label>
-                  <span className="text-xs font-mono text-stone-400 bg-stone-100 px-1.5 py-0.5 rounded">{bboxPadding}px</span>
-                </div>
-                <input 
-                  type="range" 
-                  min="0" max="30" 
-                  value={bboxPadding} 
-                  onChange={(e) => setBboxPadding(Number(e.target.value))}
-                  className="w-full h-1.5 bg-stone-200 rounded-lg appearance-none cursor-pointer accent-stone-800"
-                />
-                <p className="text-[10px] text-stone-400 leading-tight">數值越大，消除的範圍越廣，能清除邊緣殘留的筆跡，但可能誤傷周圍文字。</p>
-              </div>
-              
-              <div className="space-y-2">
-                <div className="flex justify-between items-center">
-                  <label className="text-xs font-semibold text-stone-600">印刷文字深淺閥值 (Darkness)</label>
-                  <span className="text-xs font-mono text-stone-400 bg-stone-100 px-1.5 py-0.5 rounded">+{darknessOffset}</span>
-                </div>
-                <input 
-                  type="range" 
-                  min="10" max="100" 
-                  value={darknessOffset} 
-                  onChange={(e) => setDarknessOffset(Number(e.target.value))}
-                  className="w-full h-1.5 bg-stone-200 rounded-lg appearance-none cursor-pointer accent-stone-800"
-                />
-                <p className="text-[10px] text-stone-400 leading-tight">數值越大，保留的文字越多（較淺的字也會被當作印刷字保留），但可能導致較深的鉛筆或黑筆字跡去不乾淨。</p>
-              </div>
-              
-              <div className="space-y-2">
-                <div className="flex justify-between items-center">
-                  <label className="text-xs font-semibold text-stone-600">色彩容忍度 (Color Tolerance)</label>
-                  <span className="text-xs font-mono text-stone-400 bg-stone-100 px-1.5 py-0.5 rounded">{saturationThreshold}</span>
-                </div>
-                <input 
-                  type="range" 
-                  min="5" max="50" 
-                  value={saturationThreshold} 
-                  onChange={(e) => setSaturationThreshold(Number(e.target.value))}
-                  className="w-full h-1.5 bg-stone-200 rounded-lg appearance-none cursor-pointer accent-stone-800"
-                />
-                <p className="text-[10px] text-stone-400 leading-tight">數值越大，允許保留帶有微小色彩的文字，但可能導致褪色的紅/藍筆跡無法被清除。</p>
-              </div>
-            </div>
-          </div>
-
           <div className="bg-white p-6 rounded-3xl border border-stone-200 shadow-sm space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* AI Model Selection */}
+              <div className="space-y-1.5 md:col-span-2">
+                <label className="text-xs font-semibold text-stone-500 uppercase tracking-wider">去痕 AI 模型</label>
+                <select
+                  value={aiModel}
+                  onChange={handleModelChange}
+                  className="w-full p-2.5 bg-stone-50 border border-stone-200 rounded-xl text-sm focus:ring-2 focus:ring-stone-900/5 outline-none"
+                >
+                  <option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image (免費 / 速度快)</option>
+                  <option value="gemini-3.1-flash-image-preview">Nano Banana 2 / Gemini 3.1 Flash Image (付費 / 高畫質)</option>
+                  <option value="gemini-3-pro-image-preview">Nano Banana Pro / Gemini 3 Pro Image (付費 / 最高品質)</option>
+                </select>
+                {aiModel !== 'gemini-2.5-flash-image' && (
+                  <p className="text-[10px] text-amber-600 mt-1">
+                    注意：使用此模型需要綁定 Google Cloud 付費專案的 API Key。
+                  </p>
+                )}
+              </div>
+
               {/* Subject */}
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-stone-500 uppercase tracking-wider">科目</label>

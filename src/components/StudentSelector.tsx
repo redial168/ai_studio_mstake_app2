@@ -19,16 +19,26 @@ export function StudentSelector({ onSelect }: StudentSelectorProps) {
   const [newName, setNewName] = useState('');
   const [newGrade, setNewGrade] = useState('');
   const [isLoading, setIsLoading] = useState(true);
-  const [studentToDelete, setStudentToDelete] = useState<string | null>(null);
 
   useEffect(() => {
     loadStudents();
   }, []);
 
   const loadStudents = async () => {
-    const data = await getAllStudents();
-    setStudents(data);
-    setIsLoading(false);
+    try {
+      const data = await getAllStudents();
+      setStudents(data);
+    } catch (error) {
+      console.error('Failed to load students:', error);
+      // If version error occurs, we might want to suggest clearing data or refreshing
+      if (error instanceof Error && error.name === 'VersionError') {
+        alert('資料庫版本不符。系統已嘗試修復，請重新整理頁面。');
+      } else {
+        alert('載入學生資料失敗。');
+      }
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleAdd = async (e: React.FormEvent) => {
@@ -41,16 +51,11 @@ export function StudentSelector({ onSelect }: StudentSelectorProps) {
     loadStudents();
   };
 
-  const handleDeleteClick = (e: React.MouseEvent, id: string) => {
+  const handleDelete = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    setStudentToDelete(id);
-  };
-
-  const executeDelete = async () => {
-    if (studentToDelete) {
-      await deleteStudent(studentToDelete);
+    if (confirm('確定要刪除此學生及其所有錯題嗎？此操作無法復原。')) {
+      await deleteStudent(id);
       loadStudents();
-      setStudentToDelete(null);
     }
   };
 
@@ -102,7 +107,7 @@ export function StudentSelector({ onSelect }: StudentSelectorProps) {
                 </div>
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={(e) => handleDeleteClick(e, student.id)}
+                    onClick={(e) => handleDelete(e, student.id)}
                     className="p-2 text-stone-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"
                   >
                     <Trash2 size={18} />
@@ -173,47 +178,6 @@ export function StudentSelector({ onSelect }: StudentSelectorProps) {
           </motion.form>
         )}
       </div>
-
-      {/* Delete Confirmation Modal */}
-      <AnimatePresence>
-        {studentToDelete && (
-          <motion.div
-            key="delete-student-modal"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[110] bg-stone-900/60 backdrop-blur-sm flex items-center justify-center p-4"
-            onClick={() => setStudentToDelete(null)}
-          >
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl p-6 max-w-sm w-full shadow-2xl"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <h3 className="text-lg font-bold text-stone-900 mb-2">刪除學生</h3>
-              <p className="text-stone-500 text-sm mb-6">
-                確定要刪除此學生及其所有錯題嗎？此操作無法復原。
-              </p>
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setStudentToDelete(null)}
-                  className="flex-1 px-4 py-2.5 bg-stone-100 text-stone-600 rounded-xl font-medium hover:bg-stone-200 transition-colors"
-                >
-                  取消
-                </button>
-                <button
-                  onClick={executeDelete}
-                  className="flex-1 px-4 py-2.5 bg-red-500 text-white rounded-xl font-medium hover:bg-red-600 transition-colors"
-                >
-                  確定刪除
-                </button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   );
 }
