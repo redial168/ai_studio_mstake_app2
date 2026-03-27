@@ -1,44 +1,55 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 
-export async function removeHandwritingWithAI(base64Image: string, mimeType: string): Promise<string> {
-  // Use the standard environment key for gemini-2.5-flash-image (Faster, no UI key selection needed)
+export async function removeHandwritingWithAI(base64Image: string, mimeType: string): Promise<number[][]> {
   const apiKey = process.env.GEMINI_API_KEY || "";
   const ai = new GoogleGenAI({ apiKey });
 
-  // 建立一個逾時 Promise
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('AI 處理逾時 (超過 120 秒)，這通常是因為圖片過於複雜或網路不穩。請嘗試在更強的網路環境下重試，或將考卷分段拍攝。')), 120000);
+    setTimeout(() => reject(new Error('AI 處理逾時 (超過 120 秒)，請嘗試在更強的網路環境下重試。')), 120000);
   });
 
-  // 封裝 API 呼叫
   const apiCallPromise = (async () => {
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: {
-        parts: [
-          {
-            inlineData: {
-              data: base64Image.split(',')[1], // Remove data:image/png;base64,
-              mimeType: mimeType,
-            },
+      model: 'gemini-3-flash-preview',
+      contents: [
+        {
+          text: 'Analyze this image of a test paper. Find all handwritten marks (pen, pencil, red ink, checkmarks, crosses, handwritten answers, circles, underlines drawn by hand). Return a JSON array of bounding boxes [ymin, xmin, ymax, xmax] normalized from 0 to 1000. If there are no handwritten marks, return an empty array []. CRITICAL: Ensure the bounding boxes fully cover all handwritten strokes. It is completely OK if the bounding boxes overlap with printed text, question numbers, or parentheses, because we will use a color filter to preserve the printed text later. Just make sure NO handwriting is left outside the boxes.'
+        },
+        {
+          inlineData: {
+            data: base64Image.split(',')[1],
+            mimeType: mimeType,
           },
-          {
-            text: '請移除這張考卷圖片中的所有手寫筆跡、勾選、圈選或任何非印刷文字的標記。請保留原始的題目文字、圖形、表格與排版，並將背景處理為乾淨的白色。請直接回傳處理後的圖片。',
-          },
-        ],
-      },
+        }
+      ],
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.NUMBER
+            }
+          }
+        }
+      }
     });
 
-    for (const part of response.candidates?.[0]?.content?.parts || []) {
-      if (part.inlineData) {
-        const base64Data = part.inlineData.data;
-        return `data:image/png;base64,${base64Data}`;
+    const text = response.text;
+    if (!text) return [];
+    try {
+      const bboxes = JSON.parse(text);
+      if (Array.isArray(bboxes)) {
+        return bboxes;
       }
+      return [];
+    } catch (e) {
+      console.error("Failed to parse bounding boxes", e);
+      return [];
     }
-
-    throw new Error('AI 未能返回處理後的圖片。請確認圖片格式是否正確。');
   })();
 
-  // 使用 Promise.race 進行競爭，若逾時則報錯
   return Promise.race([apiCallPromise, timeoutPromise]);
 }
+
