@@ -7,7 +7,7 @@ export async function removeHandwritingWithAI(base64Image: string, mimeType: str
 
   // 建立一個逾時 Promise
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('AI 處理逾時 (超過 45 秒)，請檢查網路連線或嘗試縮小圖片後重試。')), 45000);
+    setTimeout(() => reject(new Error('AI 處理逾時 (超過 120 秒)，這通常是因為圖片過於複雜或網路不穩。請嘗試在更強的網路環境下重試，或將考卷分段拍攝。')), 120000);
   });
 
   // 封裝 API 呼叫

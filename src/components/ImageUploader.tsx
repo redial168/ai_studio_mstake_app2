@@ -84,8 +84,8 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         ctx?.drawImage(img, 0, 0, width, height);
-        // 使用 jpeg 格式並壓縮品質以減少傳輸量
-        resolve(canvas.toDataURL('image/jpeg', 0.85));
+        // 降低品質至 0.65 以大幅減少傳輸體積，同時保持文字清晰度
+        resolve(canvas.toDataURL('image/jpeg', 0.65));
       };
     });
   };
@@ -104,7 +104,7 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
       const optimizedBase64 = await resizeImage(rawBase64);
       addLog(`✅ 圖片優化完成 (大小已縮減至約 ${(optimizedBase64.length / 1024 / 1024).toFixed(2)} MB)`);
       
-      addLog('🤖 正在呼叫 Gemini 2.5 Flash Image 模型 (預計 10-20 秒)...');
+      addLog('🤖 正在呼叫 Gemini 2.5 Flash Image 模型 (處理整張考卷可能需要 30-60 秒，請稍候)...');
       const result = await removeHandwritingWithAI(optimizedBase64, 'image/jpeg');
       
       addLog('✨ AI 處理完成，正在載入結果圖片...');

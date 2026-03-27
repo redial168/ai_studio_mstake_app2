@@ -1,5 +1,5 @@
 {
-  "name": "Smart Clear - 錯題除痕助手",
+  "name": "錯題練習系統",
   "description": "自動去除考卷筆跡，還原空白題目，建立專屬錯題本。",
   "requestFramePermissions": [
     "camera"

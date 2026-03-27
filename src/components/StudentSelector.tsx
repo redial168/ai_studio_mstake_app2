@@ -66,7 +66,7 @@ export function StudentSelector({ onSelect }: StudentSelectorProps) {
         >
           <GraduationCap size={32} />
         </motion.div>
-        <h1 className="text-3xl font-serif italic mb-2">Smart Clear</h1>
+        <h1 className="text-3xl font-serif italic mb-2">錯題練習系統</h1>
         <p className="text-stone-500">請選擇學生以開始管理錯題</p>
       </div>
 

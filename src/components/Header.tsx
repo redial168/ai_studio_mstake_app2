@@ -17,7 +17,7 @@ export function Header({ activeTab, onTabChange, studentName, onSwitchStudent }:
             <div className="w-8 h-8 bg-stone-900 rounded-lg flex items-center justify-center">
               <BookOpen className="w-5 h-5 text-white" />
             </div>
-            <h1 className="font-serif text-xl font-bold tracking-tight hidden sm:block">Smart Clear</h1>
+            <h1 className="font-serif text-xl font-bold tracking-tight hidden sm:block">錯題練習系統</h1>
           </div>
           
           <div className="h-6 w-px bg-stone-200 hidden sm:block" />
