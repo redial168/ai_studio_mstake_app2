@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { getAllQuestions, deleteQuestion } from '../lib/db';
-import { Trash2, Calendar, FileText, ExternalLink, Download, BookOpen, GraduationCap, Clock, Eye, X, Maximize2, ListFilter } from 'lucide-react';
+import { Trash2, Calendar, FileText, ExternalLink, Download, BookOpen, GraduationCap, Clock, Eye, X, Maximize2, ListFilter, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 export function QuestionGallery({ studentId }: { studentId: string }) {
@@ -8,6 +8,20 @@ export function QuestionGallery({ studentId }: { studentId: string }) {
   const [loading, setLoading] = useState(true);
   const [isZoomed, setIsZoomed] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<'date-desc' | 'date-asc' | 'subject'>('date-desc');
+  
+  // Custom modal states
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
+  const [alertMessage, setAlertMessage] = useState<string | null>(null);
 
   const loadQuestions = async () => {
     setLoading(true);
@@ -17,7 +31,7 @@ export function QuestionGallery({ studentId }: { studentId: string }) {
     } catch (error) {
       console.error('Failed to load questions:', error);
       if (error instanceof Error && error.name === 'VersionError') {
-        alert('資料庫版本不符，請重新整理頁面。');
+        setAlertMessage('資料庫版本不符，請重新整理頁面。');
       }
     } finally {
       setLoading(false);
@@ -28,21 +42,33 @@ export function QuestionGallery({ studentId }: { studentId: string }) {
     loadQuestions();
   }, [studentId]);
 
-  const handleDelete = async (id: string) => {
-    if (confirm('確定要刪除這道題目嗎？')) {
-      await deleteQuestion(id);
-      loadQuestions();
-    }
+  const handleDelete = (id: string) => {
+    setConfirmModal({
+      isOpen: true,
+      title: '刪除題目',
+      message: '確定要刪除這道題目嗎？',
+      onConfirm: async () => {
+        setConfirmModal(prev => ({ ...prev, isOpen: false }));
+        await deleteQuestion(id);
+        loadQuestions();
+      }
+    });
   };
 
-  const handleDeleteAll = async () => {
-    if (confirm('確定要刪除該學生的「所有」錯題嗎？此操作無法復原。')) {
-      setLoading(true);
-      for (const q of questions) {
-        await deleteQuestion(q.id);
+  const handleDeleteAll = () => {
+    setConfirmModal({
+      isOpen: true,
+      title: '全部刪除',
+      message: '確定要刪除該學生的「所有」錯題嗎？此操作無法復原。',
+      onConfirm: async () => {
+        setConfirmModal(prev => ({ ...prev, isOpen: false }));
+        setLoading(true);
+        for (const q of questions) {
+          await deleteQuestion(q.id);
+        }
+        await loadQuestions();
       }
-      await loadQuestions();
-    }
+    });
   };
 
   const sortedQuestions = React.useMemo(() => {
@@ -237,6 +263,86 @@ export function QuestionGallery({ studentId }: { studentId: string }) {
                 className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl"
                 referrerPolicy="no-referrer"
               />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Confirm Modal */}
+      <AnimatePresence>
+        {confirmModal.isOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[110] bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl shadow-xl max-w-sm w-full p-6 overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0">
+                  <AlertTriangle className="w-5 h-5 text-red-600" />
+                </div>
+                <h3 className="text-lg font-semibold text-stone-900">{confirmModal.title}</h3>
+              </div>
+              <p className="text-stone-600 mb-6">{confirmModal.message}</p>
+              <div className="flex justify-end gap-3">
+                <button
+                  onClick={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))}
+                  className="px-4 py-2 text-stone-600 hover:bg-stone-100 rounded-xl transition-colors font-medium"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={confirmModal.onConfirm}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl transition-colors font-medium"
+                >
+                  確定刪除
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Alert Modal */}
+      <AnimatePresence>
+        {alertMessage && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[110] bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setAlertMessage(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl shadow-xl max-w-sm w-full p-6 overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+                  <AlertTriangle className="w-5 h-5 text-amber-600" />
+                </div>
+                <h3 className="text-lg font-semibold text-stone-900">提示</h3>
+              </div>
+              <p className="text-stone-600 mb-6">{alertMessage}</p>
+              <div className="flex justify-end">
+                <button
+                  onClick={() => setAlertMessage(null)}
+                  className="px-4 py-2 bg-stone-900 hover:bg-stone-800 text-white rounded-xl transition-colors font-medium"
+                >
+                  我知道了
+                </button>
+              </div>
             </motion.div>
           </motion.div>
         )}

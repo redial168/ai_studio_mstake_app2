@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { UserPlus, Users, ChevronRight, Trash2, GraduationCap } from 'lucide-react';
+import { UserPlus, Users, ChevronRight, Trash2, GraduationCap, AlertTriangle } from 'lucide-react';
 import { getAllStudents, saveStudent, deleteStudent } from '../lib/db';
 
 interface Student {
@@ -20,6 +20,20 @@ export function StudentSelector({ onSelect }: StudentSelectorProps) {
   const [newGrade, setNewGrade] = useState('');
   const [isLoading, setIsLoading] = useState(true);
 
+  // Custom modal states
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
+  const [alertMessage, setAlertMessage] = useState<string | null>(null);
+
   useEffect(() => {
     loadStudents();
   }, []);
@@ -32,9 +46,9 @@ export function StudentSelector({ onSelect }: StudentSelectorProps) {
       console.error('Failed to load students:', error);
       // If version error occurs, we might want to suggest clearing data or refreshing
       if (error instanceof Error && error.name === 'VersionError') {
-        alert('資料庫版本不符。系統已嘗試修復，請重新整理頁面。');
+        setAlertMessage('資料庫版本不符。系統已嘗試修復，請重新整理頁面。');
       } else {
-        alert('載入學生資料失敗。');
+        setAlertMessage('載入學生資料失敗。');
       }
     } finally {
       setIsLoading(false);
@@ -51,12 +65,18 @@ export function StudentSelector({ onSelect }: StudentSelectorProps) {
     loadStudents();
   };
 
-  const handleDelete = async (e: React.MouseEvent, id: string) => {
+  const handleDelete = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    if (confirm('確定要刪除此學生及其所有錯題嗎？此操作無法復原。')) {
-      await deleteStudent(id);
-      loadStudents();
-    }
+    setConfirmModal({
+      isOpen: true,
+      title: '刪除學生',
+      message: '確定要刪除此學生及其所有錯題嗎？此操作無法復原。',
+      onConfirm: async () => {
+        setConfirmModal(prev => ({ ...prev, isOpen: false }));
+        await deleteStudent(id);
+        loadStudents();
+      }
+    });
   };
 
   if (isLoading) {
@@ -178,6 +198,86 @@ export function StudentSelector({ onSelect }: StudentSelectorProps) {
           </motion.form>
         )}
       </div>
+
+      {/* Confirm Modal */}
+      <AnimatePresence>
+        {confirmModal.isOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[110] bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl shadow-xl max-w-sm w-full p-6 overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0">
+                  <AlertTriangle className="w-5 h-5 text-red-600" />
+                </div>
+                <h3 className="text-lg font-semibold text-stone-900">{confirmModal.title}</h3>
+              </div>
+              <p className="text-stone-600 mb-6">{confirmModal.message}</p>
+              <div className="flex justify-end gap-3">
+                <button
+                  onClick={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))}
+                  className="px-4 py-2 text-stone-600 hover:bg-stone-100 rounded-xl transition-colors font-medium"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={confirmModal.onConfirm}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl transition-colors font-medium"
+                >
+                  確定刪除
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Alert Modal */}
+      <AnimatePresence>
+        {alertMessage && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[110] bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setAlertMessage(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl shadow-xl max-w-sm w-full p-6 overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+                  <AlertTriangle className="w-5 h-5 text-amber-600" />
+                </div>
+                <h3 className="text-lg font-semibold text-stone-900">提示</h3>
+              </div>
+              <p className="text-stone-600 mb-6">{alertMessage}</p>
+              <div className="flex justify-end">
+                <button
+                  onClick={() => setAlertMessage(null)}
+                  className="px-4 py-2 bg-stone-900 hover:bg-stone-800 text-white rounded-xl transition-colors font-medium"
+                >
+                  我知道了
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

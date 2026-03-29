@@ -1,8 +1,39 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Upload, Loader2, Check, Save, Eraser, MousePointer2, Square, Info, Sparkles, Maximize2, X, Terminal, ScanSearch } from 'lucide-react';
-import { removeHandwritingWithAI, detectQuestionsWithAI } from '../lib/gemini';
 import { saveQuestion } from '../lib/db';
 import { motion, AnimatePresence } from 'motion/react';
+
+const processImageWithTextIn = async (base64Str: string, appId: string, secretCode: string): Promise<string> => {
+  try {
+    // Convert base64 to Blob
+    const res = await fetch(base64Str);
+    const blob = await res.blob();
+
+    const headers: Record<string, string> = {
+      'Content-Type': blob.type || 'image/jpeg'
+    };
+    
+    if (appId) headers['x-ti-app-id'] = appId;
+    if (secretCode) headers['x-ti-secret-code'] = secretCode;
+
+    const response = await fetch('/api/process-image', {
+      method: 'POST',
+      body: blob,
+      headers
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || 'Failed to process image with TextIn API');
+    }
+
+    const data = await response.json();
+    return data.image;
+  } catch (error) {
+    console.error('TextIn API Error:', error);
+    throw error;
+  }
+};
 
 declare global {
   interface Window {
@@ -20,8 +51,17 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isZoomed, setIsZoomed] = useState<string | null>(null);
-  const [isAutoDetecting, setIsAutoDetecting] = useState(false);
   
+  const [appId, setAppId] = useState(() => localStorage.getItem('textin_app_id') || '04a82ed156a5c03d050812b59dbf90eb');
+  const [secretCode, setSecretCode] = useState(() => localStorage.getItem('textin_secret_code') || '027c712c6f55fc37f447f6b3b3159421');
+  const [skipTextIn, setSkipTextIn] = useState(() => localStorage.getItem('skip_textin') === 'true');
+
+  useEffect(() => {
+    localStorage.setItem('textin_app_id', appId);
+    localStorage.setItem('textin_secret_code', secretCode);
+    localStorage.setItem('skip_textin', skipTextIn.toString());
+  }, [appId, secretCode, skipTextIn]);
+
   // Structured input state
   const [subject, setSubject] = useState('國文');
   const [customSubject, setCustomSubject] = useState('');
@@ -41,7 +81,6 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
   const [currentRect, setCurrentRect] = useState<{ x: number, y: number, w: number, h: number } | null>(null);
   const [logs, setLogs] = useState<{ time: string, msg: string, type: 'info' | 'error' | 'success' }[]>([]);
   const [processingIndex, setProcessingIndex] = useState<number | null>(null);
-  const [aiModel, setAiModel] = useState('gemini-2.5-flash-image');
   
   const [isImageLoading, setIsImageLoading] = useState(false);
   
@@ -55,19 +94,6 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
     setLogs(prev => [...prev, { time, msg, type }]);
   };
 
-  const handleModelChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const newModel = e.target.value;
-    if (newModel !== 'gemini-2.5-flash-image') {
-      if (window.aistudio && window.aistudio.hasSelectedApiKey) {
-        const hasKey = await window.aistudio.hasSelectedApiKey();
-        if (!hasKey && window.aistudio.openSelectKey) {
-          await window.aistudio.openSelectKey();
-        }
-      }
-    }
-    setAiModel(newModel);
-  };
-
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
     if (selectedFile) {
@@ -76,20 +102,47 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
       setLogs([]);
       setIsImageLoading(true);
       
-      // Resize image before displaying to ensure manageable resolution and avoid timeouts
       try {
+        addLog('📸 讀取圖片中...');
         const base64 = await fileToBase64(selectedFile);
-        // Use 2000px as max dimension for better balance between quality and performance
+        // Resize image before displaying to ensure manageable resolution and avoid timeouts
         const resizedBase64 = await resizeImage(base64, 2000, 2000);
         setOriginalUrl(resizedBase64);
+        
+        // Get original dimensions to ensure processed image matches exactly
+        const origImg = new Image();
+        origImg.src = resizedBase64;
+        await new Promise((resolve) => { origImg.onload = resolve; });
+        const origWidth = origImg.width;
+        const origHeight = origImg.height;
+        
+        let cleanedBase64 = resizedBase64;
+        if (!skipTextIn) {
+          addLog('🤖 正在呼叫 TextIn API 去除筆跡與優化底色...');
+          cleanedBase64 = await processImageWithTextIn(resizedBase64, appId, secretCode);
+        } else {
+          addLog('⏭️ 測試模式：已跳過 TextIn API 處理');
+        }
+        
+        addLog('✨ 正在優化圖片對比度...');
+        const whitenedBase64 = await whitenBackground(cleanedBase64, origWidth, origHeight);
+        
+        setProcessedUrl(whitenedBase64);
+        addLog('✅ 圖片處理完成，請開始框選題目！', 'success');
       } catch (err) {
         console.error('Failed to process image:', err);
-        setOriginalUrl(URL.createObjectURL(selectedFile));
+        const errorMsg = err instanceof Error ? err.message : '未知錯誤';
+        addLog(`❌ 圖片處理失敗: ${errorMsg}`, 'error');
+        // Fallback to original if processing fails
+        if (!originalUrl) {
+          const fallbackUrl = URL.createObjectURL(selectedFile);
+          setOriginalUrl(fallbackUrl);
+          setProcessedUrl(fallbackUrl);
+        }
       } finally {
         setIsImageLoading(false);
       }
       
-      setProcessedUrl(null);
       setTool('select');
     }
   };
@@ -146,163 +199,92 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
     const w = x2 - x1;
     const h = y2 - y1;
     
-    // CRITICAL: Pad to square to prevent AI from squashing the aspect ratio
-    // Gemini 2.5 Flash Image defaults to 1:1, so sending a square prevents distortion
-    const size = Math.max(w, h);
     const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
+    canvas.width = w;
+    canvas.height = h;
     const ctx = canvas.getContext('2d');
     
     if (ctx) {
       ctx.fillStyle = '#FFFFFF';
-      ctx.fillRect(0, 0, size, size);
-      // Center the content
-      const dx = (size - w) / 2;
-      const dy = (size - h) / 2;
-      ctx.drawImage(sourceCanvas, x1, y1, w, h, dx, dy, w, h);
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(sourceCanvas, x1, y1, w, h, 0, 0, w, h);
     }
     
     return canvas.toDataURL('image/jpeg', 0.95);
   };
 
-  const autoCropWhiteBackground = (base64Str: string, paddingX: number = 20, paddingY: number = 10): Promise<string> => {
+  const whitenBackground = (base64Str: string, targetWidth?: number, targetHeight?: number): Promise<string> => {
     return new Promise((resolve) => {
       const img = new Image();
       img.src = base64Str;
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
+        canvas.width = targetWidth || img.width;
+        canvas.height = targetHeight || img.height;
         const ctx = canvas.getContext('2d');
         if (!ctx) return resolve(base64Str);
         
-        ctx.drawImage(img, 0, 0);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const data = imageData.data;
         
-        let minX = canvas.width;
-        let maxX = 0;
-        let minY = canvas.height;
-        let maxY = 0;
+        // White point adjustment: 
+        // We assume anything above 220 is background noise and should be pure white.
+        // This lightens the entire image while preserving the relative contrast of the text.
+        const whitePoint = 220;
+        const factor = 255 / whitePoint;
         
-        // Find non-white pixels
-        for (let y = 0; y < canvas.height; y++) {
-          for (let x = 0; x < canvas.width; x++) {
-            const i = (y * canvas.width + x) * 4;
-            const r = data[i];
-            const g = data[i+1];
-            const b = data[i+2];
-            
-            // Threshold 250 to be sensitive but ignore slight noise
-            if (r < 250 || g < 250 || b < 250) {
-              if (x < minX) minX = x;
-              if (x > maxX) maxX = x;
-              if (y < minY) minY = y;
-              if (y > maxY) maxY = y;
-            }
-          }
+        for (let i = 0; i < data.length; i += 4) {
+          data[i] = Math.min(255, data[i] * factor);
+          data[i+1] = Math.min(255, data[i+1] * factor);
+          data[i+2] = Math.min(255, data[i+2] * factor);
         }
         
-        if (minY > maxY || minX > maxX) {
-          return resolve(base64Str);
-        }
-        
-        // Add padding and constrain to canvas boundaries
-        const cropX = Math.max(0, minX - paddingX);
-        const cropY = Math.max(0, minY - paddingY);
-        const cropX2 = Math.min(canvas.width, maxX + paddingX);
-        const cropY2 = Math.min(canvas.height, maxY + paddingY);
-        
-        const width = cropX2 - cropX;
-        const height = cropY2 - cropY;
-        
-        const cropCanvas = document.createElement('canvas');
-        cropCanvas.width = width;
-        cropCanvas.height = height;
-        const cropCtx = cropCanvas.getContext('2d');
-        
-        if (cropCtx) {
-          cropCtx.fillStyle = '#FFFFFF';
-          cropCtx.fillRect(0, 0, width, height);
-          cropCtx.drawImage(canvas, cropX, cropY, width, height, 0, 0, width, height);
-          resolve(cropCanvas.toDataURL('image/jpeg', 0.95));
-        } else {
-          resolve(base64Str);
-        }
+        ctx.putImageData(imageData, 0, 0);
+        resolve(canvas.toDataURL('image/jpeg', 0.95));
       };
     });
   };
 
-  const handleAutoDetectQuestions = async () => {
-    if (!originalUrl || !canvasRef.current) return;
-    setIsAutoDetecting(true);
-    setLogs([]);
-    addLog(`🤖 正在呼叫 AI 自動偵測題目區塊...`);
-    
-    try {
-      // Use the original image (which is already resized to max 2000x2000)
-      const bboxes = await detectQuestionsWithAI(originalUrl, 'image/jpeg');
-      
-      if (bboxes.length === 0) {
-        addLog(`⚠️ AI 未能偵測到任何題目區塊。`, 'error');
-        setIsAutoDetecting(false);
-        return;
-      }
-
-      const imgWidth = canvasRef.current.width;
-      const imgHeight = canvasRef.current.height;
-      
-      const newSelections = bboxes.map(bbox => {
-        const [ymin, xmin, ymax, xmax] = bbox;
-        const x = (xmin / 1000) * imgWidth;
-        const y = (ymin / 1000) * imgHeight;
-        const w = ((xmax - xmin) / 1000) * imgWidth;
-        const h = ((ymax - ymin) / 1000) * imgHeight;
-        return { id: crypto.randomUUID(), x, y, w, h };
-      });
-
-      setSelections(newSelections);
-      addLog(`✅ 成功自動框選 ${newSelections.length} 個題目！您可以手動微調或刪除不需要的區塊。`, 'success');
-    } catch (error) {
-      console.error('Auto detect failed:', error);
-      addLog(`❌ 自動偵測失敗: ${error instanceof Error ? error.message : String(error)}`, 'error');
-    } finally {
-      setIsAutoDetecting(false);
-    }
-  };
-
   const handleBatchProcess = async () => {
-    if (!file || selections.length === 0 || !canvasRef.current) return;
+    if (!file || selections.length === 0 || !canvasRef.current || !originalUrl || !processedUrl) return;
     setIsProcessing(true);
     setLogs([]);
     addLog(`🚀 開始批次處理 ${selections.length} 個題目區塊...`);
     
     try {
-      const sourceCanvas = canvasRef.current;
+      // The main canvas currently displays the processed image
+      const processedCanvas = canvasRef.current;
+      
+      // Create an offscreen canvas for the original image
+      const originalImg = new Image();
+      originalImg.src = originalUrl;
+      await new Promise((resolve) => { originalImg.onload = resolve; });
+      const originalCanvas = document.createElement('canvas');
+      originalCanvas.width = originalImg.width;
+      originalCanvas.height = originalImg.height;
+      const originalCtx = originalCanvas.getContext('2d');
+      originalCtx?.drawImage(originalImg, 0, 0);
       
       for (let i = 0; i < selections.length; i++) {
         setProcessingIndex(i);
         const rect = selections[i];
         addLog(`📝 正在處理第 ${i + 1} 個區塊...`);
         
-        // 1. Crop directly from canvas
-        const croppedBase64 = cropFromCanvas(sourceCanvas, rect);
+        // Crop from processed canvas for the question
+        addLog(`✂️ 正在裁切第 ${i + 1} 個區塊的題目圖片...`);
+        const finalProcessedBase64 = cropFromCanvas(processedCanvas, rect);
         
-        // 2. AI Process (Recreate clean image)
-        addLog(`🤖 正在呼叫 AI 重新生成第 ${i + 1} 個區塊的乾淨圖片...`);
-        const cleanedBase64 = await removeHandwritingWithAI(croppedBase64, 'image/jpeg', aiModel);
+        // Crop from original canvas for the answer
+        addLog(`✂️ 正在裁切第 ${i + 1} 個區塊的原始圖片(解答)...`);
+        const finalOriginalBase64 = cropFromCanvas(originalCanvas, rect);
         
-        // 3. Auto-crop the white background (both dimensions)
-        addLog(`✂️ 正在精確裁切第 ${i + 1} 個區塊的邊界...`);
-        const processedUrl = await autoCropWhiteBackground(cleanedBase64, 30, 10);
-        
-        // 3. Save
+        // Save
         addLog(`💾 正在儲存第 ${i + 1} 個題目...`);
         await saveQuestion({
           studentId,
-          originalUrl: croppedBase64,
-          processedUrl: processedUrl,
+          originalUrl: finalOriginalBase64,
+          processedUrl: finalProcessedBase64,
           subject: subject === '其他' ? customSubject : subject,
           grade,
           date,
@@ -316,6 +298,7 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
       addLog('🎉 所有選取區塊處理完成！', 'success');
       setFile(null);
       setOriginalUrl(null);
+      setProcessedUrl(null);
       setSelections([]);
       setRemarks('');
       setCustomSubject('');
@@ -330,34 +313,92 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
     }
   };
 
-  const startDrawing = (e: React.MouseEvent | React.TouchEvent) => {
+  const [activeSelectionId, setActiveSelectionId] = useState<string | null>(null);
+  const dragInfo = useRef<{ mode: string, id: string, startX: number, startY: number, origRect: {x: number, y: number, w: number, h: number} } | null>(null);
+
+  const startInteraction = (e: React.MouseEvent | React.TouchEvent, mode: string, id?: string) => {
     if (tool !== 'select' || isProcessing) return;
     if ('touches' in e) e.preventDefault();
-    isDrawing.current = true;
+    
     const pos = getCanvasPos(e);
-    startPos.current = pos;
-    setCurrentRect({ x: pos.x, y: pos.y, w: 0, h: 0 });
-  };
-
-  const stopDrawing = (e?: React.MouseEvent | React.TouchEvent) => {
-    if (e && 'touches' in e) e.preventDefault();
-    if (!isDrawing.current) return;
-    isDrawing.current = false;
-    if (currentRect && currentRect.w > 10 && currentRect.h > 10) {
-      setSelections(prev => [...prev, { ...currentRect, id: Math.random().toString(36).substr(2, 9) }]);
+    
+    if (mode === 'draw') {
+      isDrawing.current = true;
+      startPos.current = pos;
+      setCurrentRect({ x: pos.x, y: pos.y, w: 0, h: 0 });
+      setActiveSelectionId(null);
+    } else if (id) {
+      e.stopPropagation(); // prevent canvas click
+      const rect = selections.find(s => s.id === id);
+      if (rect) {
+        setActiveSelectionId(id);
+        dragInfo.current = { mode, id, startX: pos.x, startY: pos.y, origRect: { ...rect } };
+      }
     }
-    setCurrentRect(null);
   };
 
-  const draw = (e: React.MouseEvent | React.TouchEvent) => {
-    if (!isDrawing.current || tool !== 'select' || isProcessing) return;
-    if ('touches' in e) e.preventDefault();
-    const currentPos = getCanvasPos(e);
-    const x = Math.min(startPos.current.x, currentPos.x);
-    const y = Math.min(startPos.current.y, currentPos.y);
-    const w = Math.abs(startPos.current.x - currentPos.x);
-    const h = Math.abs(startPos.current.y - currentPos.y);
-    setCurrentRect({ x, y, w, h });
+  const handleInteractionMove = (e: React.MouseEvent | React.TouchEvent) => {
+    if (tool !== 'select' || isProcessing) return;
+    
+    if (isDrawing.current) {
+      if ('touches' in e) e.preventDefault();
+      const currentPos = getCanvasPos(e);
+      const x = Math.min(startPos.current.x, currentPos.x);
+      const y = Math.min(startPos.current.y, currentPos.y);
+      const w = Math.abs(startPos.current.x - currentPos.x);
+      const h = Math.abs(startPos.current.y - currentPos.y);
+      setCurrentRect({ x, y, w, h });
+    } else if (dragInfo.current) {
+      if ('touches' in e) e.preventDefault();
+      const currentPos = getCanvasPos(e);
+      const { mode, id, startX, startY, origRect } = dragInfo.current;
+      const dx = currentPos.x - startX;
+      const dy = currentPos.y - startY;
+      
+      setSelections(prev => prev.map(s => {
+        if (s.id !== id) return s;
+        let newRect = { ...origRect };
+        
+        if (mode === 'move') {
+          newRect.x = Math.max(0, Math.min((canvasRef.current?.width || 0) - newRect.w, origRect.x + dx));
+          newRect.y = Math.max(0, Math.min((canvasRef.current?.height || 0) - newRect.h, origRect.y + dy));
+        } else if (mode === 'tl') {
+          newRect.x = Math.min(origRect.x + origRect.w - 10, Math.max(0, origRect.x + dx));
+          newRect.y = Math.min(origRect.y + origRect.h - 10, Math.max(0, origRect.y + dy));
+          newRect.w = origRect.x + origRect.w - newRect.x;
+          newRect.h = origRect.y + origRect.h - newRect.y;
+        } else if (mode === 'tr') {
+          newRect.y = Math.min(origRect.y + origRect.h - 10, Math.max(0, origRect.y + dy));
+          newRect.w = Math.max(10, Math.min((canvasRef.current?.width || 0) - origRect.x, origRect.w + dx));
+          newRect.h = origRect.y + origRect.h - newRect.y;
+        } else if (mode === 'bl') {
+          newRect.x = Math.min(origRect.x + origRect.w - 10, Math.max(0, origRect.x + dx));
+          newRect.w = origRect.x + origRect.w - newRect.x;
+          newRect.h = Math.max(10, Math.min((canvasRef.current?.height || 0) - origRect.y, origRect.h + dy));
+        } else if (mode === 'br') {
+          newRect.w = Math.max(10, Math.min((canvasRef.current?.width || 0) - origRect.x, origRect.w + dx));
+          newRect.h = Math.max(10, Math.min((canvasRef.current?.height || 0) - origRect.y, origRect.h + dy));
+        }
+        
+        return newRect;
+      }));
+    }
+  };
+
+  const stopInteraction = (e?: React.MouseEvent | React.TouchEvent) => {
+    if (isDrawing.current) {
+      if (e && 'touches' in e) e.preventDefault();
+      isDrawing.current = false;
+      if (currentRect && currentRect.w > 10 && currentRect.h > 10) {
+        const newId = Math.random().toString(36).substr(2, 9);
+        setSelections(prev => [...prev, { ...currentRect, id: newId }]);
+        setActiveSelectionId(newId);
+      }
+      setCurrentRect(null);
+    } else if (dragInfo.current) {
+      if (e && 'touches' in e) e.preventDefault();
+      dragInfo.current = null;
+    }
   };
 
   const removeSelection = (id: string) => {
@@ -365,18 +406,18 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
   };
 
   useEffect(() => {
-    if (originalUrl && canvasRef.current) {
+    if (processedUrl && canvasRef.current) {
       const canvas = canvasRef.current;
       const ctx = canvas.getContext('2d');
       const img = new Image();
-      img.src = originalUrl;
+      img.src = processedUrl;
       img.onload = () => {
         canvas.width = img.width;
         canvas.height = img.height;
         ctx?.drawImage(img, 0, 0);
       };
     }
-  }, [originalUrl]);
+  }, [processedUrl]);
 
   const getCanvasPos = (e: React.MouseEvent | React.TouchEvent) => {
     if (!canvasRef.current) return { x: 0, y: 0 };
@@ -419,6 +460,49 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
 
   return (
     <div className="max-w-2xl mx-auto py-8 px-4">
+      {/* API Settings */}
+      {!originalUrl && (
+        <div className="mb-8 p-5 bg-stone-50 rounded-3xl border border-stone-200 shadow-sm">
+          <h3 className="text-sm font-bold text-stone-700 mb-4 flex items-center gap-2">
+            <Terminal className="w-4 h-4" /> TextIn API 設定
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-stone-500 uppercase tracking-wider mb-1.5">App ID</label>
+              <input
+                type="text"
+                value={appId}
+                onChange={(e) => setAppId(e.target.value)}
+                className="w-full p-2.5 bg-white border border-stone-200 rounded-xl text-sm focus:ring-2 focus:ring-stone-900/5 outline-none transition-all"
+                placeholder="輸入 x-ti-app-id"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-stone-500 uppercase tracking-wider mb-1.5">Secret Code</label>
+              <input
+                type="password"
+                value={secretCode}
+                onChange={(e) => setSecretCode(e.target.value)}
+                className="w-full p-2.5 bg-white border border-stone-200 rounded-xl text-sm focus:ring-2 focus:ring-stone-900/5 outline-none transition-all"
+                placeholder="輸入 x-ti-secret-code"
+              />
+            </div>
+          </div>
+          <div className="mt-4 flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="skipTextIn"
+              checked={skipTextIn}
+              onChange={(e) => setSkipTextIn(e.target.checked)}
+              className="w-4 h-4 text-stone-900 rounded border-stone-300 focus:ring-stone-900"
+            />
+            <label htmlFor="skipTextIn" className="text-sm text-stone-600 font-medium cursor-pointer">
+              測試模式：跳過 TextIn API 處理 (不扣除額度)
+            </label>
+          </div>
+        </div>
+      )}
+
       {!originalUrl ? (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -449,16 +533,6 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
                 {isProcessing ? '正在批次處理中...' : '請在考卷上框選題目區塊 (可多選)'}
               </p>
               <div className="flex items-center gap-2">
-                {!isProcessing && (
-                  <button
-                    onClick={handleAutoDetectQuestions}
-                    disabled={isAutoDetecting}
-                    className="flex items-center gap-1 text-[10px] bg-amber-100 text-amber-700 hover:bg-amber-200 px-2.5 py-1 rounded-full font-bold transition-colors disabled:opacity-50"
-                  >
-                    {isAutoDetecting ? <Loader2 className="w-3 h-3 animate-spin" /> : <ScanSearch className="w-3 h-3" />}
-                    AI 自動分題
-                  </button>
-                )}
                 <span className="text-[10px] bg-stone-900 text-white px-2 py-1 rounded-full font-bold">
                   已選取 {selections.length} 個區塊
                 </span>
@@ -484,55 +558,74 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
                   <p className="text-sm text-stone-500 font-medium">正在優化圖片解析度...</p>
                 </div>
               )}
-              <div className="relative inline-block">
+              <div 
+                className="relative inline-block"
+                onMouseMove={handleInteractionMove}
+                onMouseUp={stopInteraction}
+                onMouseLeave={stopInteraction}
+                onTouchMove={handleInteractionMove}
+                onTouchEnd={stopInteraction}
+              >
                 <canvas
                   ref={canvasRef}
-                  onMouseDown={startDrawing}
-                  onMouseMove={draw}
-                  onMouseUp={stopDrawing}
-                  onMouseLeave={stopDrawing}
-                  onTouchStart={startDrawing}
-                  onTouchMove={draw}
-                  onTouchEnd={stopDrawing}
+                  onMouseDown={(e) => startInteraction(e, 'draw')}
+                  onTouchStart={(e) => startInteraction(e, 'draw')}
                   className={`max-w-full max-h-[70vh] w-auto h-auto block ${tool === 'select' && !isProcessing ? 'cursor-crosshair' : 'cursor-default'}`}
                 />
                 
                 {/* Existing Selections */}
-                {selections.map((s, i) => (
-                  <div 
-                    key={s.id}
-                    className={`absolute border-2 transition-all flex items-start justify-end p-1 pointer-events-none ${
-                      processingIndex === i 
-                        ? 'border-amber-500 bg-amber-500/20 animate-pulse' 
-                        : i < (processingIndex ?? -1)
-                          ? 'border-emerald-500 bg-emerald-500/10'
-                          : 'border-stone-900 bg-stone-900/10'
-                    }`}
-                    style={{
-                      left: `${(s.x / (canvasRef.current?.width || 1)) * 100}%`,
-                      top: `${(s.y / (canvasRef.current?.height || 1)) * 100}%`,
-                      width: `${(s.w / (canvasRef.current?.width || 1)) * 100}%`,
-                      height: `${(s.h / (canvasRef.current?.height || 1)) * 100}%`,
-                    }}
-                  >
-                    {!isProcessing && (
-                      <button 
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          e.preventDefault();
-                          removeSelection(s.id);
-                        }}
-                        className="bg-stone-900 text-white p-1 rounded-md hover:bg-red-500 transition-colors shadow-lg pointer-events-auto"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    )}
-                    <div className="absolute top-0 left-0 bg-stone-900 text-white text-[10px] px-1.5 py-0.5 font-bold">
-                      #{i + 1}
+                {selections.map((s, i) => {
+                  const isActive = activeSelectionId === s.id;
+                  return (
+                    <div 
+                      key={s.id}
+                      onMouseDown={(e) => startInteraction(e, 'move', s.id)}
+                      onTouchStart={(e) => startInteraction(e, 'move', s.id)}
+                      className={`absolute border-2 transition-all flex items-start justify-end p-1 ${
+                        tool === 'select' && !isProcessing ? 'pointer-events-auto cursor-move' : 'pointer-events-none'
+                      } ${
+                        processingIndex === i 
+                          ? 'border-amber-500 bg-amber-500/20 animate-pulse' 
+                          : i < (processingIndex ?? -1)
+                            ? 'border-emerald-500 bg-emerald-500/10'
+                            : isActive
+                              ? 'border-blue-500 bg-blue-400/20 z-10'
+                              : 'border-stone-900 bg-stone-900/10 hover:bg-stone-900/20'
+                      }`}
+                      style={{
+                        left: `${(s.x / (canvasRef.current?.width || 1)) * 100}%`,
+                        top: `${(s.y / (canvasRef.current?.height || 1)) * 100}%`,
+                        width: `${(s.w / (canvasRef.current?.width || 1)) * 100}%`,
+                        height: `${(s.h / (canvasRef.current?.height || 1)) * 100}%`,
+                      }}
+                    >
+                      {isActive && !isProcessing && (
+                        <>
+                          <div className="absolute -top-1.5 -left-1.5 w-3 h-3 bg-white border-2 border-blue-500 cursor-nwse-resize" onMouseDown={(e) => startInteraction(e, 'tl', s.id)} onTouchStart={(e) => startInteraction(e, 'tl', s.id)} />
+                          <div className="absolute -top-1.5 -right-1.5 w-3 h-3 bg-white border-2 border-blue-500 cursor-nesw-resize" onMouseDown={(e) => startInteraction(e, 'tr', s.id)} onTouchStart={(e) => startInteraction(e, 'tr', s.id)} />
+                          <div className="absolute -bottom-1.5 -left-1.5 w-3 h-3 bg-white border-2 border-blue-500 cursor-nesw-resize" onMouseDown={(e) => startInteraction(e, 'bl', s.id)} onTouchStart={(e) => startInteraction(e, 'bl', s.id)} />
+                          <div className="absolute -bottom-1.5 -right-1.5 w-3 h-3 bg-white border-2 border-blue-500 cursor-nwse-resize" onMouseDown={(e) => startInteraction(e, 'br', s.id)} onTouchStart={(e) => startInteraction(e, 'br', s.id)} />
+                        </>
+                      )}
+                      {!isProcessing && (
+                        <button 
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            removeSelection(s.id);
+                          }}
+                          className="bg-stone-900 text-white p-1 rounded-md hover:bg-red-500 transition-colors shadow-lg pointer-events-auto relative z-20"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      )}
+                      <div className="absolute top-0 left-0 bg-stone-900 text-white text-[10px] px-1.5 py-0.5 font-bold pointer-events-none">
+                        #{i + 1}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
 
                 {/* Current Drawing Rect */}
                 {currentRect && (
@@ -550,23 +643,13 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
 
               <div className="absolute bottom-4 right-4 flex gap-2">
                 <button 
-                  onClick={() => setIsZoomed(originalUrl)}
+                  onClick={() => setIsZoomed(processedUrl)}
                   className="p-2 bg-white/90 backdrop-blur-sm rounded-xl shadow-lg hover:bg-white transition-colors"
-                  title="放大查看原圖"
+                  title="放大查看圖片"
                 >
                   <Maximize2 className="w-5 h-5 text-stone-600" />
                 </button>
               </div>
-              
-              {/* Tooltip */}
-              {!isProcessing && selections.length === 0 && (
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <div className="bg-white/80 backdrop-blur px-4 py-2 rounded-full shadow-sm border border-stone-200 flex items-center gap-2 text-stone-500 text-sm">
-                    <Square className="w-4 h-4" />
-                    請在考卷上拖曳滑鼠來選取題目
-                  </div>
-                </div>
-              )}
             </div>
           </div>
           
@@ -609,25 +692,6 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
 
           <div className="bg-white p-6 rounded-3xl border border-stone-200 shadow-sm space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* AI Model Selection */}
-              <div className="space-y-1.5 md:col-span-2">
-                <label className="text-xs font-semibold text-stone-500 uppercase tracking-wider">去痕 AI 模型</label>
-                <select
-                  value={aiModel}
-                  onChange={handleModelChange}
-                  className="w-full p-2.5 bg-stone-50 border border-stone-200 rounded-xl text-sm focus:ring-2 focus:ring-stone-900/5 outline-none"
-                >
-                  <option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image (免費 / 速度快)</option>
-                  <option value="gemini-3.1-flash-image-preview">Nano Banana 2 / Gemini 3.1 Flash Image (付費 / 高畫質)</option>
-                  <option value="gemini-3-pro-image-preview">Nano Banana Pro / Gemini 3 Pro Image (付費 / 最高品質)</option>
-                </select>
-                {aiModel !== 'gemini-2.5-flash-image' && (
-                  <p className="text-[10px] text-amber-600 mt-1">
-                    注意：使用此模型需要綁定 Google Cloud 付費專案的 API Key。
-                  </p>
-                )}
-              </div>
-
               {/* Subject */}
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-stone-500 uppercase tracking-wider">科目</label>
@@ -713,6 +777,7 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
               <button
                 onClick={() => {
                   setOriginalUrl(null);
+                  setProcessedUrl(null);
                   setSelections([]);
                 }}
                 disabled={isProcessing}
