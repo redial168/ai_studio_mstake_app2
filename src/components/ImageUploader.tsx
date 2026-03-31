@@ -66,6 +66,8 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
   const [subject, setSubject] = useState('國文');
   const [customSubject, setCustomSubject] = useState('');
   const [grade, setGrade] = useState('7');
+  const [volume, setVolume] = useState('');
+  const [unit, setUnit] = useState('');
   const [date, setDate] = useState(() => {
     const now = new Date();
     return now.toISOString().split('T')[0];
@@ -287,6 +289,8 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
           processedUrl: finalProcessedBase64,
           subject: subject === '其他' ? customSubject : subject,
           grade,
+          volume: volume.trim() || undefined,
+          unit: unit.trim() || undefined,
           date,
           time,
           remarks: selections.length > 1 ? `${remarks} (區塊 ${i + 1})`.trim() : remarks.trim() || undefined,
@@ -357,7 +361,7 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
       
       setSelections(prev => prev.map(s => {
         if (s.id !== id) return s;
-        let newRect = { ...origRect };
+        let newRect = { ...origRect, id: s.id };
         
         if (mode === 'move') {
           newRect.x = Math.max(0, Math.min((canvasRef.current?.width || 0) - newRect.w, origRect.x + dx));
@@ -729,6 +733,32 @@ export function ImageUploader({ studentId, onSaveSuccess }: { studentId: string,
                     <option key={g} value={g}>{g} 年級</option>
                   ))}
                 </select>
+              </div>
+
+              {/* Volume */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-stone-500 uppercase tracking-wider">冊別</label>
+                <input
+                  type="text"
+                  maxLength={20}
+                  placeholder="例如：第一冊"
+                  value={volume}
+                  onChange={(e) => setVolume(e.target.value)}
+                  className="w-full p-2.5 bg-stone-50 border border-stone-200 rounded-xl text-sm focus:ring-2 focus:ring-stone-900/5 outline-none"
+                />
+              </div>
+
+              {/* Unit */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-stone-500 uppercase tracking-wider">單元</label>
+                <input
+                  type="text"
+                  maxLength={20}
+                  placeholder="例如：第一單元"
+                  value={unit}
+                  onChange={(e) => setUnit(e.target.value)}
+                  className="w-full p-2.5 bg-stone-50 border border-stone-200 rounded-xl text-sm focus:ring-2 focus:ring-stone-900/5 outline-none"
+                />
               </div>
 
               {/* Date */}

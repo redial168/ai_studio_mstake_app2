@@ -11,6 +11,8 @@ interface QuestionDB extends DBSchema {
       createdAt: number;
       subject?: string;
       grade?: string;
+      volume?: string;
+      unit?: string;
       date?: string;
       time?: string;
       remarks?: string;
@@ -75,6 +77,8 @@ export async function saveQuestion(question: {
   processedUrl: string;
   subject?: string;
   grade?: string;
+  volume?: string;
+  unit?: string;
   date?: string;
   time?: string;
   remarks?: string;
