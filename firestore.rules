@@ -1,0 +1,116 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: questions
+    // Document ID: auto-generated
+    // Fields:
+    //   - userId: string (required, immutable) - ID of the user who owns this question
+    //   - studentId: string (required) - ID of the student this question belongs to
+    //   - originalUrl: string (required) - URL of the original image
+    //   - processedUrl: string (required) - URL of the processed image
+    //   - createdAt: number (required, immutable) - Timestamp of creation
+    //   - subject: string (optional) - Subject of the question
+    //   - grade: string (optional) - Grade level
+    //   - volume: string (optional) - Volume or book number
+    //   - unit: string (optional) - Unit or chapter
+    //   - date: string (optional) - Date of the question
+    //   - time: string (optional) - Time of the question
+    //   - remarks: string (optional) - Additional remarks
+    //   - note: string (optional) - Additional note
+    //
+    // Collection: students
+    // Document ID: auto-generated
+    // Fields:
+    //   - userId: string (required, immutable) - ID of the user who owns this student profile
+    //   - name: string (required) - Name of the student
+    //   - grade: string (optional) - Grade level of the student
+    //   - createdAt: number (required, immutable) - Timestamp of creation
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+    
+    function uidUnchanged() {
+      return !('userId' in request.resource.data) || request.resource.data.userId == request.auth.uid;
+    }
+    
+    function uidNotModified() {
+      return !('userId' in request.resource.data) || request.resource.data.userId == resource.data.userId;
+    }
+    
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function isValidOptionalString(field, minLen, maxLen) {
+      return !(field in request.resource.data) ||
+             (request.resource.data[field] is string &&
+              request.resource.data[field].size() >= minLen &&
+              request.resource.data[field].size() <= maxLen);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidQuestion(data) {
+      return hasRequiredFields(['userId', 'studentId', 'originalUrl', 'processedUrl', 'createdAt']) &&
+             data.userId is string && data.userId.size() > 0 && data.userId.size() < 100 &&
+             data.studentId is string && data.studentId.size() > 0 && data.studentId.size() < 100 &&
+             data.originalUrl is string && data.originalUrl.size() > 0 && data.originalUrl.size() < 10485760 &&
+             data.processedUrl is string && data.processedUrl.size() > 0 && data.processedUrl.size() < 10485760 &&
+             data.createdAt is number &&
+             isValidOptionalString('id', 0, 100) &&
+             isValidOptionalString('subject', 0, 100) &&
+             isValidOptionalString('grade', 0, 100) &&
+             isValidOptionalString('volume', 0, 100) &&
+             isValidOptionalString('unit', 0, 100) &&
+             isValidOptionalString('date', 0, 100) &&
+             isValidOptionalString('time', 0, 100) &&
+             isValidOptionalString('remarks', 0, 1000) &&
+             isValidOptionalString('note', 0, 1000);
+    }
+
+    function isValidStudent(data) {
+      return hasRequiredFields(['userId', 'name', 'createdAt']) &&
+             data.userId is string && data.userId.size() > 0 && data.userId.size() < 100 &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.createdAt is number &&
+             isValidOptionalString('id', 0, 100) &&
+             isValidOptionalString('grade', 0, 100);
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /questions/{questionId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && isValidQuestion(request.resource.data) && uidUnchanged();
+      allow update: if isDocOwner() && isValidQuestion(request.resource.data) && uidNotModified() && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isDocOwner();
+    }
+
+    match /students/{studentId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && isValidStudent(request.resource.data) && uidUnchanged();
+      allow update: if isDocOwner() && isValidStudent(request.resource.data) && uidNotModified() && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isDocOwner();
+    }
+  }
+}

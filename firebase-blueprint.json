@@ -1,0 +1,47 @@
+{
+  "entities": {
+    "Question": {
+      "title": "Question",
+      "description": "A saved question with its original and processed images.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The ID of the user who owns this question." },
+        "studentId": { "type": "string", "description": "The ID of the student this question belongs to." },
+        "originalUrl": { "type": "string", "description": "URL of the original image." },
+        "processedUrl": { "type": "string", "description": "URL of the processed image." },
+        "createdAt": { "type": "number", "description": "Timestamp of creation." },
+        "subject": { "type": "string", "description": "Subject of the question." },
+        "grade": { "type": "string", "description": "Grade level." },
+        "volume": { "type": "string", "description": "Volume or book number." },
+        "unit": { "type": "string", "description": "Unit or chapter." },
+        "date": { "type": "string", "description": "Date of the question." },
+        "time": { "type": "string", "description": "Time of the question." },
+        "remarks": { "type": "string", "description": "Additional remarks." },
+        "note": { "type": "string", "description": "Additional note." }
+      },
+      "required": ["userId", "studentId", "originalUrl", "processedUrl", "createdAt"]
+    },
+    "Student": {
+      "title": "Student",
+      "description": "A student profile.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The ID of the user who owns this student profile." },
+        "name": { "type": "string", "description": "Name of the student." },
+        "grade": { "type": "string", "description": "Grade level of the student." },
+        "createdAt": { "type": "number", "description": "Timestamp of creation." }
+      },
+      "required": ["userId", "name", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/questions/{questionId}": {
+      "schema": { "$ref": "#/entities/Question" },
+      "description": "Collection of all questions."
+    },
+    "/students/{studentId}": {
+      "schema": { "$ref": "#/entities/Student" },
+      "description": "Collection of all students."
+    }
+  }
+}

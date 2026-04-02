@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { UserPlus, Users, ChevronRight, Trash2, GraduationCap, AlertTriangle } from 'lucide-react';
-import { getAllStudents, saveStudent, deleteStudent } from '../lib/db';
+import { subscribeToStudents, saveStudent, deleteStudent } from '../lib/db';
 
 interface Student {
   id: string;
@@ -35,34 +35,24 @@ export function StudentSelector({ onSelect }: StudentSelectorProps) {
   const [alertMessage, setAlertMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    loadStudents();
-  }, []);
-
-  const loadStudents = async () => {
-    try {
-      const data = await getAllStudents();
+    const unsubscribe = subscribeToStudents((data) => {
       setStudents(data);
-    } catch (error) {
-      console.error('Failed to load students:', error);
-      // If version error occurs, we might want to suggest clearing data or refreshing
-      if (error instanceof Error && error.name === 'VersionError') {
-        setAlertMessage('資料庫版本不符。系統已嘗試修復，請重新整理頁面。');
-      } else {
-        setAlertMessage('載入學生資料失敗。');
-      }
-    } finally {
       setIsLoading(false);
-    }
-  };
+    });
+    return () => unsubscribe();
+  }, []);
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newName.trim()) return;
-    await saveStudent({ name: newName, grade: newGrade });
-    setNewName('');
-    setNewGrade('');
-    setIsAdding(false);
-    loadStudents();
+    try {
+      await saveStudent({ name: newName, grade: newGrade });
+      setNewName('');
+      setNewGrade('');
+      setIsAdding(false);
+    } catch (error) {
+      setAlertMessage('新增學生失敗');
+    }
   };
 
   const handleDelete = (e: React.MouseEvent, id: string) => {
@@ -73,8 +63,11 @@ export function StudentSelector({ onSelect }: StudentSelectorProps) {
       message: '確定要刪除此學生及其所有錯題嗎？此操作無法復原。',
       onConfirm: async () => {
         setConfirmModal(prev => ({ ...prev, isOpen: false }));
-        await deleteStudent(id);
-        loadStudents();
+        try {
+          await deleteStudent(id);
+        } catch (error) {
+          setAlertMessage('刪除學生失敗');
+        }
       }
     });
   };

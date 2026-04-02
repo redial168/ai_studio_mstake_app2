@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { getAllQuestions, deleteQuestion } from '../lib/db';
+import { subscribeToQuestions, deleteQuestion } from '../lib/db';
 import { Trash2, Calendar, FileText, ExternalLink, Download, BookOpen, GraduationCap, Clock, Eye, X, Maximize2, ListFilter, AlertTriangle, Printer, CheckSquare, Square } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { jsPDF } from 'jspdf';
@@ -33,23 +33,13 @@ export function QuestionGallery({ studentId }: { studentId: string }) {
   });
   const [alertMessage, setAlertMessage] = useState<string | null>(null);
 
-  const loadQuestions = async () => {
-    setLoading(true);
-    try {
-      const data = await getAllQuestions(studentId);
-      setQuestions(data);
-    } catch (error) {
-      console.error('Failed to load questions:', error);
-      if (error instanceof Error && error.name === 'VersionError') {
-        setAlertMessage('資料庫版本不符，請重新整理頁面。');
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
-    loadQuestions();
+    setLoading(true);
+    const unsubscribe = subscribeToQuestions(studentId, (data) => {
+      setQuestions(data);
+      setLoading(false);
+    });
+    return () => unsubscribe();
   }, [studentId]);
 
   const handleDelete = (id: string) => {
@@ -59,8 +49,11 @@ export function QuestionGallery({ studentId }: { studentId: string }) {
       message: '確定要刪除這道題目嗎？',
       onConfirm: async () => {
         setConfirmModal(prev => ({ ...prev, isOpen: false }));
-        await deleteQuestion(id);
-        loadQuestions();
+        try {
+          await deleteQuestion(id);
+        } catch (error) {
+          setAlertMessage('刪除題目失敗');
+        }
       }
     });
   };
@@ -73,10 +66,15 @@ export function QuestionGallery({ studentId }: { studentId: string }) {
       onConfirm: async () => {
         setConfirmModal(prev => ({ ...prev, isOpen: false }));
         setLoading(true);
-        for (const q of questions) {
-          await deleteQuestion(q.id);
+        try {
+          for (const q of questions) {
+            await deleteQuestion(q.id);
+          }
+        } catch (error) {
+          setAlertMessage('刪除題目失敗');
+        } finally {
+          setLoading(false);
         }
-        await loadQuestions();
       }
     });
   };

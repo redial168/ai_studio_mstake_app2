@@ -1,74 +1,66 @@
-import { openDB, DBSchema, IDBPDatabase } from 'idb';
+import { db, auth } from './firebase';
+import { collection, doc, setDoc, getDocs, deleteDoc, query, where, orderBy, onSnapshot, getDoc } from 'firebase/firestore';
 
-interface QuestionDB extends DBSchema {
-  questions: {
-    key: string;
-    value: {
-      id: string;
-      studentId: string;
-      originalUrl: string;
-      processedUrl: string;
-      createdAt: number;
-      subject?: string;
-      grade?: string;
-      volume?: string;
-      unit?: string;
-      date?: string;
-      time?: string;
-      remarks?: string;
-      note?: string; // Keep for backward compatibility if needed
-    };
-    indexes: { 
-      'by-date': number;
-      'by-student': string;
-    };
-  };
-  students: {
-    key: string;
-    value: {
-      id: string;
-      name: string;
-      grade?: string;
-      createdAt: number;
-    };
-    indexes: { 'by-name': string };
-  };
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
 }
 
-let dbPromise: Promise<IDBPDatabase<QuestionDB>>;
-
-export function getDB() {
-  if (!dbPromise) {
-    dbPromise = openDB<QuestionDB>('question-bank', 3, {
-      upgrade(db, oldVersion, _newVersion, tx) {
-        if (oldVersion < 1) {
-          const store = db.createObjectStore('questions', {
-            keyPath: 'id',
-          });
-          store.createIndex('by-date', 'createdAt');
-          store.createIndex('by-student', 'studentId');
-        }
-        if (oldVersion < 2) {
-          if (!db.objectStoreNames.contains('students')) {
-            const studentStore = db.createObjectStore('students', {
-              keyPath: 'id',
-            });
-            studentStore.createIndex('by-name', 'name');
-          }
-          // Ensure questions store has the student index if it didn't before
-          const questionStore = tx.objectStore('questions');
-          if (!questionStore.indexNames.contains('by-student')) {
-            questionStore.createIndex('by-student', 'studentId');
-          }
-        }
-        if (oldVersion < 3) {
-          // Placeholder for version 3 migrations if any
-          // For now, just bumping the version to resolve the error
-        }
-      },
-    });
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string;
+    email?: string | null;
+    emailVerified?: boolean;
+    isAnonymous?: boolean;
+    tenantId?: string | null;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
   }
-  return dbPromise;
+}
+
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
+// Test connection
+export async function testConnection() {
+  try {
+    await getDoc(doc(db, 'test', 'connection'));
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('the client is offline')) {
+      console.error("Please check your Firebase configuration. ");
+    }
+  }
 }
 
 export async function saveQuestion(question: {
@@ -84,59 +76,161 @@ export async function saveQuestion(question: {
   remarks?: string;
   note?: string;
 }) {
-  const db = await getDB();
+  if (!auth.currentUser) throw new Error("User not authenticated");
+  
   const id = crypto.randomUUID();
   const newQuestion = {
     id,
+    userId: auth.currentUser.uid,
     ...question,
     createdAt: Date.now(),
   };
-  await db.add('questions', newQuestion);
-  return newQuestion;
+
+  try {
+    await setDoc(doc(db, 'questions', id), newQuestion);
+    return newQuestion;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, `questions/${id}`);
+  }
 }
 
 export async function getAllQuestions(studentId?: string) {
-  const db = await getDB();
-  if (studentId) {
-    return db.getAllFromIndex('questions', 'by-student', studentId);
+  if (!auth.currentUser) return [];
+  
+  try {
+    let q;
+    if (studentId) {
+      q = query(
+        collection(db, 'questions'), 
+        where('userId', '==', auth.currentUser.uid),
+        where('studentId', '==', studentId)
+      );
+    } else {
+      q = query(
+        collection(db, 'questions'),
+        where('userId', '==', auth.currentUser.uid)
+      );
+    }
+    
+    const querySnapshot = await getDocs(q);
+    return querySnapshot.docs.map(doc => doc.data() as any).sort((a, b) => b.createdAt - a.createdAt);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'questions');
+    return [];
   }
-  return db.getAllFromIndex('questions', 'by-date');
+}
+
+export function subscribeToQuestions(studentId: string | undefined, callback: (questions: any[]) => void) {
+  if (!auth.currentUser) {
+    callback([]);
+    return () => {};
+  }
+  
+  let q;
+  if (studentId) {
+    q = query(
+      collection(db, 'questions'), 
+      where('userId', '==', auth.currentUser.uid),
+      where('studentId', '==', studentId)
+    );
+  } else {
+    q = query(
+      collection(db, 'questions'),
+      where('userId', '==', auth.currentUser.uid)
+    );
+  }
+  
+  return onSnapshot(q, (snapshot) => {
+    const questions = snapshot.docs.map(doc => doc.data() as any).sort((a, b) => b.createdAt - a.createdAt);
+    callback(questions);
+  }, (error) => {
+    handleFirestoreError(error, OperationType.LIST, 'questions');
+  });
 }
 
 export async function deleteQuestion(id: string) {
-  const db = await getDB();
-  await db.delete('questions', id);
+  if (!auth.currentUser) throw new Error("User not authenticated");
+  
+  try {
+    await deleteDoc(doc(db, 'questions', id));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `questions/${id}`);
+  }
 }
 
 // Student Management
 export async function saveStudent(student: { name: string; grade?: string }) {
-  const db = await getDB();
+  if (!auth.currentUser) throw new Error("User not authenticated");
+  
   const id = crypto.randomUUID();
   const newStudent = {
     id,
+    userId: auth.currentUser.uid,
     ...student,
     createdAt: Date.now(),
   };
-  await db.add('students', newStudent);
-  return newStudent;
+
+  try {
+    await setDoc(doc(db, 'students', id), newStudent);
+    return newStudent;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, `students/${id}`);
+  }
 }
 
 export async function getAllStudents() {
-  const db = await getDB();
-  return db.getAllFromIndex('students', 'by-name');
+  if (!auth.currentUser) return [];
+  
+  try {
+    const q = query(
+      collection(db, 'students'),
+      where('userId', '==', auth.currentUser.uid)
+    );
+    const querySnapshot = await getDocs(q);
+    return querySnapshot.docs.map(doc => doc.data() as any).sort((a, b) => a.name.localeCompare(b.name));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'students');
+    return [];
+  }
+}
+
+export function subscribeToStudents(callback: (students: any[]) => void) {
+  if (!auth.currentUser) {
+    callback([]);
+    return () => {};
+  }
+  
+  const q = query(
+    collection(db, 'students'),
+    where('userId', '==', auth.currentUser.uid)
+  );
+  
+  return onSnapshot(q, (snapshot) => {
+    const students = snapshot.docs.map(doc => doc.data() as any).sort((a, b) => a.name.localeCompare(b.name));
+    callback(students);
+  }, (error) => {
+    handleFirestoreError(error, OperationType.LIST, 'students');
+  });
 }
 
 export async function deleteStudent(id: string) {
-  const db = await getDB();
-  // Optional: Also delete all questions for this student
-  const tx = db.transaction(['questions', 'students'], 'readwrite');
-  const questionStore = tx.objectStore('questions');
-  const studentStore = tx.objectStore('students');
+  if (!auth.currentUser) throw new Error("User not authenticated");
   
-  const questions = await questionStore.index('by-student').getAllKeys(id);
-  for (const qId of questions) {
-    await questionStore.delete(qId);
+  try {
+    // Also delete all questions for this student
+    const q = query(
+      collection(db, 'questions'),
+      where('userId', '==', auth.currentUser.uid),
+      where('studentId', '==', id)
+    );
+    const querySnapshot = await getDocs(q);
+    
+    for (const docSnapshot of querySnapshot.docs) {
+      await deleteDoc(doc(db, 'questions', docSnapshot.id));
+    }
+    
+    await deleteDoc(doc(db, 'students', id));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `students/${id}`);
   }
-  await studentStore.delete(id);
-  await tx.done;
 }
